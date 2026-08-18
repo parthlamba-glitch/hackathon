@@ -2,6 +2,7 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import matplotlib.pyplot as plt
+import sys
 
 from scipy.signal import butter, sosfiltfilt
 
@@ -22,8 +23,11 @@ print()
 # ============================================================
 # 1. CONFIGURATION
 # ============================================================
-
-VIDEO_PATH = "test_video.mp4"
+VIDEO_PATH = (
+    sys.argv[1]
+    if len(sys.argv) > 1
+    else "test_video.mp4"
+)
 
 MODEL_PATH = "face_landmarker.task"
 
@@ -2259,7 +2263,249 @@ for name, passed in audit.items():
 
 
 # ============================================================
-# 28. FINAL SIGNAL QUALITY INTERPRETATION
+# 28. FEATURE EXTRACTION FOR MACHINE LEARNING
+# ============================================================
+
+# Average spectral peak strength across BPM windows
+
+if len(forehead_bpm_results) > 0:
+
+    peak_strength_values = np.array([
+
+        result["peak_strength"]
+
+        for result in forehead_bpm_results
+
+    ])
+
+    mean_peak_strength = float(
+        np.mean(peak_strength_values)
+    )
+
+    peak_strength_std = float(
+        np.std(peak_strength_values)
+    )
+
+else:
+
+    mean_peak_strength = 0.0
+    peak_strength_std = 0.0
+
+
+# ------------------------------------------------------------
+# Regional consistency
+# ------------------------------------------------------------
+#
+# We compare the dominant BPM from the three facial regions.
+#
+# If all regions contain a similar physiological signal,
+# their BPM estimates should be reasonably close.
+# ------------------------------------------------------------
+
+def get_region_bpm(
+    filtered_signal,
+    fps
+):
+
+    results = analyze_bpm_windows(
+
+        filtered_signal,
+
+        fps,
+
+        BPM_WINDOW_SECONDS,
+
+        BPM_STEP_SECONDS,
+
+        LOW_HZ,
+
+        HIGH_HZ,
+
+        FFT_SIZE
+    )
+
+    if len(results) == 0:
+
+        return np.nan
+
+    values = np.array([
+
+        result["bpm"]
+
+        for result in results
+
+    ])
+
+    return float(
+        np.median(values)
+    )
+
+
+left_region_bpm = get_region_bpm(
+    left_cheek_filtered,
+    fps
+)
+
+right_region_bpm = get_region_bpm(
+    right_cheek_filtered,
+    fps
+)
+
+
+if (
+    not np.isnan(median_bpm)
+    and not np.isnan(left_region_bpm)
+    and not np.isnan(right_region_bpm)
+):
+
+    regional_bpms = np.array([
+
+        median_bpm,
+        left_region_bpm,
+        right_region_bpm
+
+    ])
+
+    regional_bpm_std = float(
+        np.std(regional_bpms)
+    )
+
+    regional_bpm_range = float(
+        np.max(regional_bpms)
+        -
+        np.min(regional_bpms)
+    )
+
+else:
+
+    regional_bpm_std = 999.0
+    regional_bpm_range = 999.0
+
+
+# ------------------------------------------------------------
+# Temporal stability
+# ------------------------------------------------------------
+#
+# How much does the forehead signal change from sample
+# to sample?
+#
+# This becomes another numerical feature for the classifier.
+# ------------------------------------------------------------
+
+if len(forehead_filtered) > 1:
+
+    signal_difference = np.diff(
+        forehead_filtered
+    )
+
+    temporal_stability = float(
+        np.std(signal_difference)
+    )
+
+else:
+
+    temporal_stability = 999.0
+
+
+# ------------------------------------------------------------
+# Final feature dictionary
+# ------------------------------------------------------------
+
+features = {
+
+    "video": VIDEO_PATH,
+
+    "duration_seconds":
+        float(duration_seconds),
+
+    "fps":
+        float(fps),
+
+    "face_detection_rate":
+        float(detection_rate),
+
+    "median_bpm":
+        float(median_bpm)
+        if not np.isnan(median_bpm)
+        else 0.0,
+
+    "mean_bpm":
+        float(mean_bpm)
+        if not np.isnan(mean_bpm)
+        else 0.0,
+
+    "bpm_std":
+        float(bpm_std)
+        if not np.isnan(bpm_std)
+        else 999.0,
+
+    "bpm_range":
+        float(bpm_range)
+        if not np.isnan(bpm_range)
+        else 999.0,
+
+    "mean_peak_strength":
+        mean_peak_strength,
+
+    "peak_strength_std":
+        peak_strength_std,
+
+    "left_region_bpm":
+        float(left_region_bpm)
+        if not np.isnan(left_region_bpm)
+        else 0.0,
+
+    "right_region_bpm":
+        float(right_region_bpm)
+        if not np.isnan(right_region_bpm)
+        else 0.0,
+
+    "regional_bpm_std":
+        regional_bpm_std,
+
+    "regional_bpm_range":
+        regional_bpm_range,
+
+    "temporal_stability":
+        temporal_stability
+}
+
+
+print()
+print("=" * 60)
+print("              ML FEATURES")
+print("=" * 60)
+
+for name, value in features.items():
+
+    print(
+        f"{name}: {value}"
+    )
+
+# ============================================================
+# 29. SAVE FEATURES
+# ============================================================
+
+import json
+
+with open(
+    "features.json",
+    "w"
+) as f:
+
+    json.dump(
+        features,
+        f,
+        indent=4
+    )
+
+print()
+print(
+    "Features saved to features.json"
+)
+
+# ============================================================
+# 30. FINAL SIGNAL QUALITY INTERPRETATION
 # ============================================================
 
 print()
@@ -2337,7 +2583,7 @@ print(
 
 
 # ============================================================
-# 29. FRONTEND-STYLE OUTPUT
+# 31. FRONTEND-STYLE OUTPUT
 # ============================================================
 
 # We are deliberately NOT calling this

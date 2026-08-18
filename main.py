@@ -3,122 +3,130 @@ import mediapipe as mp
 import numpy as np
 import matplotlib.pyplot as plt
 
-from scipy.signal import butter, filtfilt
-from scipy.fft import rfft, rfftfreq
+from scipy.signal import butter, sosfiltfilt
 
 
 # ============================================================
-# PULSEGUARD
-# Deepfake Detection using rPPG
-#
-# CURRENT PIPELINE:
-#
-# 1. Video loading
-# 2. MediaPipe face landmarks
-# 3. Forehead + cheek ROIs
-# 4. RGB extraction
-# 5. RGB normalization
-# 6. Windowed POS rPPG extraction
-# 7. Bandpass filtering
-# 8. FFT
-# 9. BPM estimation
-# 10. Regional consistency
-# 11. Pipeline audit
-#
-# NOTE:
-# This version does NOT make a REAL/DEEPFAKE verdict yet.
+#                    PULSEGUARD
+#          rPPG / PHYSIOLOGICAL SIGNAL PIPELINE
 # ============================================================
 
 
+print()
+print("=" * 60)
+print("                 PULSEGUARD STARTING")
+print("=" * 60)
+print()
+
+
 # ============================================================
-# 0. CONFIGURATION
+# 1. CONFIGURATION
 # ============================================================
 
-video_path = "test_video.mp4"
+VIDEO_PATH = "test_video.mp4"
 
-# Save a few frames so we can visually inspect our ROIs
-sample_frames = [0, 150, 300, 450, 600]
+MODEL_PATH = "face_landmarker.task"
 
 # Heart-rate frequency range
+#
+# 0.7 Hz = 42 BPM
+# 4.0 Hz = 240 BPM
+#
+# This is deliberately broad for the prototype.
 LOW_HZ = 0.7
 HIGH_HZ = 4.0
 
-# POS window length in seconds
+# POS window
 POS_WINDOW_SECONDS = 1.6
 
+# Windowed BPM analysis
+BPM_WINDOW_SECONDS = 10
+BPM_STEP_SECONDS = 5
 
-# ============================================================
-# PIPELINE STATUS TRACKER
+# Number of FFT points.
 #
-# This lets us check at the end whether every major block
-# actually ran.
-# ============================================================
-
-pipeline_status = {
-    "Video opened": False,
-    "MediaPipe initialized": False,
-    "Face detection": False,
-    "Forehead ROI extraction": False,
-    "Left cheek ROI extraction": False,
-    "Right cheek ROI extraction": False,
-    "RGB extraction": False,
-    "RGB normalization": False,
-    "POS rPPG extraction": False,
-    "Bandpass filtering": False,
-    "FFT / BPM estimation": False,
-    "Regional consistency": False
-}
+# Zero-padding makes the spectrum look smoother and
+# gives a finer frequency grid, but does NOT magically
+# increase the true information in the video.
+FFT_SIZE = 4096
 
 
 # ============================================================
-# 1. VIDEO SETUP
+# 2. VIDEO SETUP
 # ============================================================
 
-print()
-print("============================================================")
-print("                 PULSEGUARD STARTING")
-print("============================================================")
-print()
+video_path = VIDEO_PATH
 
 cap = cv2.VideoCapture(video_path)
 
 if not cap.isOpened():
 
     print("ERROR: Could not open video.")
-    print("Check that the video exists and the filename is correct.")
     exit()
 
-pipeline_status["Video opened"] = True
 
-
-fps = cap.get(cv2.CAP_PROP_FPS)
+fps = cap.get(
+    cv2.CAP_PROP_FPS
+)
 
 total_frames = int(
-    cap.get(cv2.CAP_PROP_FRAME_COUNT)
+    cap.get(
+        cv2.CAP_PROP_FRAME_COUNT
+    )
 )
 
 width = int(
-    cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+    cap.get(
+        cv2.CAP_PROP_FRAME_WIDTH
+    )
 )
 
 height = int(
-    cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+    cap.get(
+        cv2.CAP_PROP_FRAME_HEIGHT
+    )
 )
+
+
+if fps <= 0:
+
+    print("ERROR: Invalid FPS.")
+    cap.release()
+    exit()
+
 
 duration_seconds = (
     total_frames / fps
-    if fps > 0
-    else 0
 )
 
 
-print("Video opened successfully")
-print("FPS:", fps)
-print("Total frames:", total_frames)
-print("Resolution:", width, "x", height)
+print(
+    "Video opened successfully"
+)
+
+print(
+    "FPS:",
+    round(fps, 2)
+)
+
+print(
+    "Total frames:",
+    total_frames
+)
+
+print(
+    "Resolution:",
+    width,
+    "x",
+    height
+)
+
 print(
     "Duration:",
-    round(duration_seconds, 2),
+    round(
+        duration_seconds,
+        2
+    ),
     "seconds"
 )
 
@@ -126,12 +134,17 @@ print()
 
 
 # ============================================================
-# 2. MEDIAPIPE FACE LANDMARKER SETUP
+# 3. MEDIAPIPE FACE LANDMARKER SETUP
 # ============================================================
 
-print("Initializing MediaPipe...")
+print(
+    "Initializing MediaPipe..."
+)
 
-BaseOptions = mp.tasks.BaseOptions
+
+BaseOptions = (
+    mp.tasks.BaseOptions
+)
 
 FaceLandmarker = (
     mp.tasks.vision.FaceLandmarker
@@ -146,13 +159,10 @@ RunningMode = (
 )
 
 
-model_path = "face_landmarker.task"
-
-
 options = FaceLandmarkerOptions(
 
     base_options=BaseOptions(
-        model_asset_path=model_path
+        model_asset_path=MODEL_PATH
     ),
 
     running_mode=RunningMode.VIDEO,
@@ -173,18 +183,17 @@ landmarker = (
     )
 )
 
-pipeline_status["MediaPipe initialized"] = True
+
+print(
+    "MediaPipe initialized."
+)
+
+print()
 
 
 # ============================================================
-# 3. STORAGE
+# 4. STORAGE
 # ============================================================
-
-# Each element will eventually contain:
-#
-# [R, G, B]
-#
-# for one video frame.
 
 forehead_rgb = []
 
@@ -193,39 +202,43 @@ left_cheek_rgb = []
 right_cheek_rgb = []
 
 
-# Number of frames processed
+# Store actual timestamp for every
+# successfully detected face.
+
+sample_times = []
+
+
 processed_frames = 0
 
-# Number of frames where MediaPipe found a face
 face_detected_frames = 0
 
 
 # ============================================================
-# 4. PROCESS VIDEO FRAME-BY-FRAME
+# 5. PROCESS VIDEO FRAME-BY-FRAME
 # ============================================================
 
-print("Processing video...")
+print(
+    "Processing video..."
+)
+
 print()
 
 
 while True:
 
-    # --------------------------------------------------------
-    # Read one frame
-    # --------------------------------------------------------
-
     ret, frame = cap.read()
 
     if not ret:
+
         break
+
 
     processed_frames += 1
 
 
     # --------------------------------------------------------
-    # Convert BGR → RGB
+    # OpenCV gives BGR.
     #
-    # OpenCV uses BGR.
     # MediaPipe expects RGB.
     # --------------------------------------------------------
 
@@ -235,9 +248,7 @@ while True:
     )
 
 
-    # --------------------------------------------------------
     # Convert NumPy image to MediaPipe image
-    # --------------------------------------------------------
 
     mp_image = mp.Image(
 
@@ -250,24 +261,22 @@ while True:
 
 
     # --------------------------------------------------------
-    # Timestamp
-    #
-    # MediaPipe VIDEO mode requires timestamps.
+    # TIMESTAMP
     # --------------------------------------------------------
 
+    current_time = (
+        (processed_frames - 1)
+        / fps
+    )
+
+
     timestamp_ms = int(
-
-        (
-            (processed_frames - 1)
-            / fps
-        )
-        * 1000
-
+        current_time * 1000
     )
 
 
     # --------------------------------------------------------
-    # Detect face landmarks
+    # FACE LANDMARK DETECTION
     # --------------------------------------------------------
 
     result = (
@@ -279,7 +288,7 @@ while True:
 
 
     # --------------------------------------------------------
-    # 5. CHECK FOR FACE
+    # NO FACE FOUND
     # --------------------------------------------------------
 
     if not result.face_landmarks:
@@ -289,11 +298,8 @@ while True:
 
     face_detected_frames += 1
 
-    pipeline_status["Face detection"] = True
 
-
-    # We only requested one face.
-    # Therefore take the first face.
+    # First detected face
 
     landmarks = (
         result.face_landmarks[0]
@@ -317,7 +323,6 @@ while True:
         landmarks[109],
 
         landmarks[103]
-
     ]
 
 
@@ -326,7 +331,6 @@ while True:
         int(point.x * width)
 
         for point in forehead_points
-
     ]
 
 
@@ -335,7 +339,6 @@ while True:
         int(point.y * height)
 
         for point in forehead_points
-
     ]
 
 
@@ -349,7 +352,6 @@ while True:
         width
     )
 
-
     fy_min = max(
         min(y_coords),
         0
@@ -362,19 +364,9 @@ while True:
 
 
     forehead_roi = frame[
-
         fy_min:fy_max,
-
         fx_min:fx_max
-
     ]
-
-
-    if forehead_roi.size > 0:
-
-        pipeline_status[
-            "Forehead ROI extraction"
-        ] = True
 
 
     # ========================================================
@@ -390,7 +382,6 @@ while True:
         landmarks[205],
 
         landmarks[187]
-
     ]
 
 
@@ -399,7 +390,6 @@ while True:
         int(point.x * width)
 
         for point in left_cheek_points
-
     ]
 
 
@@ -408,7 +398,6 @@ while True:
         int(point.y * height)
 
         for point in left_cheek_points
-
     ]
 
 
@@ -422,7 +411,6 @@ while True:
         width
     )
 
-
     ly_min = max(
         min(y_coords),
         0
@@ -435,19 +423,9 @@ while True:
 
 
     left_cheek_roi = frame[
-
         ly_min:ly_max,
-
         lx_min:lx_max
-
     ]
-
-
-    if left_cheek_roi.size > 0:
-
-        pipeline_status[
-            "Left cheek ROI extraction"
-        ] = True
 
 
     # ========================================================
@@ -463,7 +441,6 @@ while True:
         landmarks[425],
 
         landmarks[411]
-
     ]
 
 
@@ -472,7 +449,6 @@ while True:
         int(point.x * width)
 
         for point in right_cheek_points
-
     ]
 
 
@@ -481,7 +457,6 @@ while True:
         int(point.y * height)
 
         for point in right_cheek_points
-
     ]
 
 
@@ -495,7 +470,6 @@ while True:
         width
     )
 
-
     ry_min = max(
         min(y_coords),
         0
@@ -508,23 +482,13 @@ while True:
 
 
     right_cheek_roi = frame[
-
         ry_min:ry_max,
-
         rx_min:rx_max
-
     ]
 
 
-    if right_cheek_roi.size > 0:
-
-        pipeline_status[
-            "Right cheek ROI extraction"
-        ] = True
-
-
     # ========================================================
-    # 9. CHECK ROIS
+    # 9. CHECK ROI VALIDITY
     # ========================================================
 
     if (
@@ -568,11 +532,11 @@ while True:
     # --------------------------------------------------------
     # OpenCV gives:
     #
-    # [B, G, R]
+    # [Blue, Green, Red]
     #
-    # Reverse it:
+    # Convert to:
     #
-    # [R, G, B]
+    # [Red, Green, Blue]
     # --------------------------------------------------------
 
     forehead_rgb.append(
@@ -590,89 +554,15 @@ while True:
     )
 
 
-    pipeline_status["RGB extraction"] = True
+    # Save timestamp
 
-
-    # ========================================================
-    # 11. DRAW ROI BOXES
-    # ========================================================
-
-    # Green = forehead
-
-    cv2.rectangle(
-
-        frame,
-
-        (fx_min, fy_min),
-
-        (fx_max, fy_max),
-
-        (0, 255, 0),
-
-        2
-
+    sample_times.append(
+        current_time
     )
-
-
-    # Blue = left cheek
-
-    cv2.rectangle(
-
-        frame,
-
-        (lx_min, ly_min),
-
-        (lx_max, ly_max),
-
-        (255, 0, 0),
-
-        2
-
-    )
-
-
-    # Red = right cheek
-
-    cv2.rectangle(
-
-        frame,
-
-        (rx_min, ry_min),
-
-        (rx_max, ry_max),
-
-        (0, 0, 255),
-
-        2
-
-    )
-
-
-    # ========================================================
-    # 12. SAVE SAMPLE FRAMES
-    # ========================================================
-
-    if (
-
-        processed_frames - 1
-
-        in sample_frames
-
-    ):
-
-        cv2.imwrite(
-
-            f"roi_frame_"
-            f"{processed_frames - 1}"
-            f".jpg",
-
-            frame
-
-        )
 
 
 # ============================================================
-# 13. CLEAN UP VIDEO + MEDIAPIPE
+# 11. CLEAN UP VIDEO / MEDIAPIPE
 # ============================================================
 
 cap.release()
@@ -681,13 +571,13 @@ landmarker.close()
 
 
 # ============================================================
-# 14. BASIC VIDEO RESULTS
+# 12. BASIC VIDEO RESULTS
 # ============================================================
 
 print()
-print("============================================================")
+print("=" * 60)
 print("                    VIDEO RESULTS")
-print("============================================================")
+print("=" * 60)
 
 print(
     "Processed frames:",
@@ -716,13 +606,16 @@ else:
 
 print(
     "Face detection rate:",
-    round(detection_rate, 2),
+    round(
+        detection_rate,
+        2
+    ),
     "%"
 )
 
 
 # ============================================================
-# 15. CONVERT SIGNALS TO NUMPY ARRAYS
+# 13. CONVERT TO NUMPY ARRAYS
 # ============================================================
 
 forehead_rgb = np.array(
@@ -743,78 +636,199 @@ right_cheek_rgb = np.array(
 )
 
 
+sample_times = np.array(
+    sample_times,
+    dtype=float
+)
+
+
 print()
 
+
 print(
-    "Forehead RGB shape:",
+    "Original forehead RGB shape:",
     forehead_rgb.shape
 )
 
 print(
-    "Left cheek RGB shape:",
+    "Original left cheek RGB shape:",
     left_cheek_rgb.shape
 )
 
 print(
-    "Right cheek RGB shape:",
+    "Original right cheek RGB shape:",
     right_cheek_rgb.shape
 )
 
 
 # ============================================================
-# 16. CHECK SIGNAL LENGTH
+# 14. SAFETY CHECK
 # ============================================================
 
-if len(forehead_rgb) < 10:
+if len(sample_times) < 100:
 
     print()
     print(
-        "ERROR: Not enough forehead samples."
-    )
-
-    print(
-        "Cannot continue with rPPG processing."
+        "ERROR: Not enough valid face samples."
     )
 
     exit()
 
 
 # ============================================================
-# 17. RGB NORMALIZATION
+# 15. INTERPOLATE MISSING FRAMES
 # ============================================================
 
-def normalize_rgb(rgb_signal):
+def interpolate_rgb(
+    rgb_signal,
+    sample_times,
+    fps,
+    total_duration
+):
+    """
+    Reconstruct a uniformly sampled RGB signal.
 
+    If a few frames failed face detection,
+    interpolation estimates their values from
+    nearby valid samples.
+    """
+
+    # --------------------------------------------------------
+    # Create the ideal time grid
+    # --------------------------------------------------------
+
+    regular_times = np.arange(
+
+        0,
+
+        total_duration,
+
+        1 / fps
+    )
+
+
+    interpolated = np.zeros(
+
+        (
+            len(regular_times),
+            3
+        )
+    )
+
+
+    # --------------------------------------------------------
+    # Interpolate R, G and B separately
+    # --------------------------------------------------------
+
+    for channel in range(3):
+
+        interpolated[:, channel] = (
+            np.interp(
+
+                regular_times,
+
+                sample_times,
+
+                rgb_signal[:, channel]
+            )
+        )
+
+
+    return (
+        interpolated,
+        regular_times
+    )
+
+
+print()
+print(
+    "Interpolating missing samples..."
+)
+
+
+forehead_rgb, regular_times = (
+    interpolate_rgb(
+
+        forehead_rgb,
+
+        sample_times,
+
+        fps,
+
+        duration_seconds
+    )
+)
+
+
+left_cheek_rgb, _ = (
+    interpolate_rgb(
+
+        left_cheek_rgb,
+
+        sample_times,
+
+        fps,
+
+        duration_seconds
+    )
+)
+
+
+right_cheek_rgb, _ = (
+    interpolate_rgb(
+
+        right_cheek_rgb,
+
+        sample_times,
+
+        fps,
+
+        duration_seconds
+    )
+)
+
+
+print(
+    "Interpolated forehead RGB shape:",
+    forehead_rgb.shape
+)
+
+
+# ============================================================
+# 16. RGB NORMALIZATION
+# ============================================================
+
+def normalize_rgb(
+    rgb_signal
+):
     """
     Normalize each RGB channel independently.
 
-    Formula:
+    This removes the large baseline differences
+    between R, G and B.
 
-        normalized =
-            (signal - mean) / standard deviation
+    Output has approximately:
+        mean = 0
+        standard deviation = 1
     """
 
     mean = np.mean(
-
         rgb_signal,
-
         axis=0
-
     )
 
 
     std = np.std(
-
         rgb_signal,
-
         axis=0
-
     )
 
 
     # Prevent division by zero
 
-    std[std == 0] = 1
+    std[
+        std < 1e-8
+    ] = 1
 
 
     normalized = (
@@ -827,7 +841,11 @@ def normalize_rgb(rgb_signal):
     return normalized
 
 
-# Normalize all three regions
+print()
+print(
+    "Normalizing RGB signals..."
+)
+
 
 forehead_normalized = (
     normalize_rgb(
@@ -850,24 +868,45 @@ right_cheek_normalized = (
 )
 
 
-pipeline_status[
-    "RGB normalization"
-] = True
+# ============================================================
+# 17. RGB NORMALIZATION CHECK
+# ============================================================
+
+print()
+print(
+    "RGB normalization check:"
+)
+
+
+print(
+    "Forehead means:",
+    np.round(
+        np.mean(
+            forehead_normalized,
+            axis=0
+        ),
+        4
+    )
+)
+
+
+print(
+    "Forehead std:",
+    np.round(
+        np.std(
+            forehead_normalized,
+            axis=0
+        ),
+        4
+    )
+)
 
 
 # ============================================================
 # 18. PLOT NORMALIZED RGB
 # ============================================================
 
-time = (
-
-    np.arange(
-        len(forehead_normalized)
-    )
-
-    / fps
-
-)
+time = regular_times
 
 
 plt.figure(
@@ -882,7 +921,6 @@ plt.plot(
     forehead_normalized[:, 0],
 
     label="Red"
-
 )
 
 
@@ -893,7 +931,6 @@ plt.plot(
     forehead_normalized[:, 1],
 
     label="Green"
-
 )
 
 
@@ -904,7 +941,6 @@ plt.plot(
     forehead_normalized[:, 2],
 
     label="Blue"
-
 )
 
 
@@ -912,16 +948,13 @@ plt.xlabel(
     "Time (seconds)"
 )
 
-
 plt.ylabel(
     "Normalized intensity"
 )
 
-
 plt.title(
     "PulseGuard - Forehead RGB Signal"
 )
-
 
 plt.legend()
 
@@ -933,91 +966,62 @@ plt.show()
 
 
 # ============================================================
-# 19. POS rPPG EXTRACTION
+# 19. CANONICAL POS rPPG EXTRACTION
 # ============================================================
 
 def extract_pos_signal(
+
     rgb_signal,
+
     fps,
+
     window_seconds=1.6
 ):
-
     """
-    Extract an rPPG signal using a windowed POS-style method.
+    Extract rPPG using the POS method.
 
     Input:
+        RGB signal with shape:
+        (frames, 3)
 
-        rgb_signal:
-            shape = (number_of_frames, 3)
-
-            columns:
-                0 = R
-                1 = G
-                2 = B
-
-        fps:
-            frames per second
-
-    Output:
-
-        pulse_signal:
-            one-dimensional rPPG signal
+    Columns:
+        0 = Red
+        1 = Green
+        2 = Blue
     """
-
 
     number_of_frames = (
         rgb_signal.shape[0]
     )
 
 
-    # --------------------------------------------------------
-    # Convert window duration to number of frames
-    # --------------------------------------------------------
-
     window_length = int(
-
         round(
             window_seconds * fps
         )
-
     )
 
 
     if number_of_frames < window_length:
 
         raise ValueError(
-
-            "Video is too short "
-            "for POS processing."
-
+            "Video is too short for POS."
         )
 
-
-    # --------------------------------------------------------
-    # Final signal
-    # --------------------------------------------------------
 
     pulse_signal = np.zeros(
         number_of_frames
     )
 
 
-    # --------------------------------------------------------
-    # Count how many windows contribute
-    # to every frame.
-    #
-    # This allows us to average overlapping
-    # windows instead of simply adding them.
-    # --------------------------------------------------------
-
     contribution_count = np.zeros(
         number_of_frames
     )
 
 
-    # ========================================================
-    # PROCESS TEMPORAL WINDOWS
-    # ========================================================
+    # --------------------------------------------------------
+    # Sliding windows
+    # --------------------------------------------------------
 
     for start in range(
 
@@ -1035,143 +1039,121 @@ def extract_pos_signal(
         )
 
 
-        # ----------------------------------------------------
-        # Extract current RGB window
-        # ----------------------------------------------------
-
-        window = rgb_signal[
-            start:end
-        ].copy()
+        window = (
+            rgb_signal[
+                start:end
+            ].copy()
+        )
 
 
         # ----------------------------------------------------
-        # Normalize each channel by
-        # its temporal mean
+        # Temporal normalization
         # ----------------------------------------------------
 
-        channel_mean = np.mean(
+        mean_rgb = np.mean(
 
             window,
 
             axis=0
-
         )
 
 
-        channel_mean[
-            channel_mean == 0
+        mean_rgb[
+            mean_rgb < 1e-8
         ] = 1
 
 
-        normalized_window = (
-
+        Cn = (
             window
-            / channel_mean
-
+            / mean_rgb
         )
 
 
-        # ----------------------------------------------------
-        # Separate RGB
-        # ----------------------------------------------------
+        R = Cn[:, 0]
 
-        R = normalized_window[:, 0]
+        G = Cn[:, 1]
 
-        G = normalized_window[:, 1]
-
-        B = normalized_window[:, 2]
+        B = Cn[:, 2]
 
 
         # ----------------------------------------------------
-        # POS projection
+        # POS projections
         # ----------------------------------------------------
 
-        X = (
-
-            3 * R
-            - 2 * G
-
+        S1 = (
+            G - B
         )
 
 
-        Y = (
-
-            1.5 * R
+        S2 = (
+            -2 * R
             + G
-            - 1.5 * B
-
+            + B
         )
-
-
-        # ----------------------------------------------------
-        # Calculate standard deviations
-        # ----------------------------------------------------
-
-        std_x = np.std(X)
-
-        std_y = np.std(Y)
-
-
-        if std_y < 1e-8:
-
-            continue
 
 
         # ----------------------------------------------------
         # Adaptive weighting
         # ----------------------------------------------------
 
-        alpha = (
-            std_x
-            / std_y
+        std_s1 = np.std(
+            S1
         )
 
 
-        # ----------------------------------------------------
-        # Construct pulse signal
-        # ----------------------------------------------------
-
-        h = (
-            X
-            + alpha * Y
+        std_s2 = np.std(
+            S2
         )
 
 
-        # ----------------------------------------------------
-        # Remove DC component
-        # ----------------------------------------------------
-
-        h = (
-            h
-            - np.mean(h)
-        )
-
-
-        # ----------------------------------------------------
-        # Normalize window
-        # ----------------------------------------------------
-
-        h_std = np.std(h)
-
-
-        if h_std < 1e-8:
+        if std_s2 < 1e-8:
 
             continue
 
 
-        h = (
-            h
-            / h_std
+        alpha = (
+            std_s1
+            / std_s2
         )
 
 
         # ----------------------------------------------------
-        # Add window to final signal
+        # Combine projections
+        # ----------------------------------------------------
+
+        H = (
+
+            S1
+            + alpha * S2
+
+        )
+
+
+        # Remove DC component
+
+        H -= np.mean(H)
+
+
+        # Normalize
+
+        H_std = np.std(H)
+
+
+        if H_std < 1e-8:
+
+            continue
+
+
+        H /= H_std
+
+
+        # ----------------------------------------------------
+        # Overlap-add
         # ----------------------------------------------------
 
         pulse_signal[
             start:end
-        ] += h
+        ] += H
 
 
         contribution_count[
@@ -1180,7 +1162,7 @@ def extract_pos_signal(
 
 
     # ========================================================
-    # AVERAGE OVERLAPPING WINDOWS
+    # Average overlapping windows
     # ========================================================
 
     valid = (
@@ -1194,7 +1176,7 @@ def extract_pos_signal(
 
 
     # ========================================================
-    # FINAL NORMALIZATION
+    # Final normalization
     # ========================================================
 
     pulse_signal -= np.mean(
@@ -1202,86 +1184,63 @@ def extract_pos_signal(
     )
 
 
-    final_std = np.std(
+    signal_std = np.std(
         pulse_signal
     )
 
 
-    if final_std > 1e-8:
+    if signal_std > 1e-8:
 
-        pulse_signal /= final_std
+        pulse_signal /= signal_std
 
 
     return pulse_signal
 
 
-# ============================================================
-# 20. EXTRACT rPPG FROM ALL THREE ROIs
-# ============================================================
-
 print()
-print("Extracting POS rPPG signals...")
+print(
+    "Extracting POS rPPG signals..."
+)
 
 
-try:
+forehead_pulse = (
+    extract_pos_signal(
 
-    forehead_pulse = (
-        extract_pos_signal(
+        forehead_rgb,
 
-            forehead_rgb,
+        fps,
 
-            fps,
-
-            POS_WINDOW_SECONDS
-
-        )
+        POS_WINDOW_SECONDS
     )
+)
 
 
-    left_cheek_pulse = (
-        extract_pos_signal(
+left_cheek_pulse = (
+    extract_pos_signal(
 
-            left_cheek_rgb,
+        left_cheek_rgb,
 
-            fps,
+        fps,
 
-            POS_WINDOW_SECONDS
-
-        )
+        POS_WINDOW_SECONDS
     )
+)
 
 
-    right_cheek_pulse = (
-        extract_pos_signal(
+right_cheek_pulse = (
+    extract_pos_signal(
 
-            right_cheek_rgb,
+        right_cheek_rgb,
 
-            fps,
+        fps,
 
-            POS_WINDOW_SECONDS
-
-        )
+        POS_WINDOW_SECONDS
     )
-
-
-    pipeline_status[
-        "POS rPPG extraction"
-    ] = True
-
-
-except ValueError as error:
-
-    print()
-    print(
-        "POS ERROR:",
-        error
-    )
-
-    exit()
+)
 
 
 # ============================================================
-# 21. PLOT RAW POS rPPG SIGNALS
+# 20. PLOT RAW POS SIGNALS
 # ============================================================
 
 plt.figure(
@@ -1296,7 +1255,6 @@ plt.plot(
     forehead_pulse,
 
     label="Forehead"
-
 )
 
 
@@ -1307,7 +1265,6 @@ plt.plot(
     left_cheek_pulse,
 
     label="Left Cheek"
-
 )
 
 
@@ -1318,7 +1275,6 @@ plt.plot(
     right_cheek_pulse,
 
     label="Right Cheek"
-
 )
 
 
@@ -1326,16 +1282,13 @@ plt.xlabel(
     "Time (seconds)"
 )
 
-
 plt.ylabel(
     "rPPG signal"
 )
 
-
 plt.title(
     "PulseGuard - POS Extracted rPPG Signals"
 )
-
 
 plt.legend()
 
@@ -1347,7 +1300,7 @@ plt.show()
 
 
 # ============================================================
-# 22. BANDPASS FILTER
+# 21. BANDPASS FILTER
 # ============================================================
 
 def bandpass_filter(
@@ -1360,28 +1313,16 @@ def bandpass_filter(
 
     high_hz=4.0,
 
-    order=3
-
+    order=4
 ):
-
     """
-    Keep frequencies between
-    low_hz and high_hz.
+    Keep only frequencies corresponding
+    to plausible human heart rates.
     """
 
-    nyquist = fps / 2
-
-
-    # Safety check
-
-    if high_hz >= nyquist:
-
-        raise ValueError(
-
-            "High cutoff frequency "
-            "must be below Nyquist frequency."
-
-        )
+    nyquist = (
+        fps / 2
+    )
 
 
     low = (
@@ -1396,37 +1337,46 @@ def bandpass_filter(
     )
 
 
-    b, a = butter(
+    if high >= 1:
+
+        high = 0.99
+
+
+    if low <= 0:
+
+        low = 0.001
+
+
+    sos = butter(
 
         order,
 
-        [low, high],
+        [
+            low,
+            high
+        ],
 
-        btype="band"
+        btype="bandpass",
 
+        output="sos"
     )
 
 
-    filtered = filtfilt(
-
-        b,
-
-        a,
-
-        signal
-
+    filtered = (
+        sosfiltfilt(
+            sos,
+            signal
+        )
     )
 
 
     return filtered
 
 
-# ============================================================
-# 23. APPLY BANDPASS FILTER
-# ============================================================
-
 print()
-print("Applying bandpass filter...")
+print(
+    "Applying bandpass filter..."
+)
 
 
 forehead_filtered = (
@@ -1439,7 +1389,6 @@ forehead_filtered = (
         LOW_HZ,
 
         HIGH_HZ
-
     )
 )
 
@@ -1454,7 +1403,6 @@ left_cheek_filtered = (
         LOW_HZ,
 
         HIGH_HZ
-
     )
 )
 
@@ -1469,18 +1417,12 @@ right_cheek_filtered = (
         LOW_HZ,
 
         HIGH_HZ
-
     )
 )
 
 
-pipeline_status[
-    "Bandpass filtering"
-] = True
-
-
 # ============================================================
-# 24. PLOT FILTERED rPPG
+# 22. PLOT FILTERED SIGNAL
 # ============================================================
 
 plt.figure(
@@ -1495,7 +1437,6 @@ plt.plot(
     forehead_filtered,
 
     label="Forehead"
-
 )
 
 
@@ -1506,7 +1447,6 @@ plt.plot(
     left_cheek_filtered,
 
     label="Left Cheek"
-
 )
 
 
@@ -1517,7 +1457,6 @@ plt.plot(
     right_cheek_filtered,
 
     label="Right Cheek"
-
 )
 
 
@@ -1525,16 +1464,13 @@ plt.xlabel(
     "Time (seconds)"
 )
 
-
 plt.ylabel(
     "Filtered rPPG"
 )
 
-
 plt.title(
     "PulseGuard - Filtered rPPG Signal"
 )
-
 
 plt.legend()
 
@@ -1546,653 +1482,1014 @@ plt.show()
 
 
 # ============================================================
-# 25. FFT / BPM ESTIMATION
+# 23. WINDOWED BPM ANALYSIS
 # ============================================================
 
-def estimate_bpm(
+def analyze_bpm_windows(
 
     signal,
 
     fps,
 
+    window_seconds=10,
+
+    step_seconds=5,
+
     low_hz=0.7,
 
-    high_hz=4.0
+    high_hz=4.0,
 
+    fft_size=4096
 ):
-
     """
-    Find the strongest frequency in the
-    plausible heart-rate range.
+    Analyze the signal in overlapping windows.
 
-    Returns:
+    Each window produces:
 
-        bpm
-        dominant_frequency
-        peak_magnitude
+        BPM
+        dominant frequency
+        spectral peak strength
     """
 
+    window_size = int(
+        window_seconds * fps
+    )
 
-    number_of_samples = (
+
+    step_size = int(
+        step_seconds * fps
+    )
+
+
+    results = []
+
+
+    # --------------------------------------------------------
+    # Move through the signal
+    # --------------------------------------------------------
+
+    for start in range(
+
+        0,
+
         len(signal)
-    )
+        - window_size
+        + 1,
 
+        step_size
 
-    # --------------------------------------------------------
-    # FFT
-    # --------------------------------------------------------
+    ):
 
-    spectrum = np.abs(
-
-        rfft(signal)
-
-    )
-
-
-    # --------------------------------------------------------
-    # Frequencies corresponding to FFT bins
-    # --------------------------------------------------------
-
-    frequencies = rfftfreq(
-
-        number_of_samples,
-
-        d=1 / fps
-
-    )
-
-
-    # --------------------------------------------------------
-    # Keep only plausible heart-rate frequencies
-    # --------------------------------------------------------
-
-    valid = (
-
-        (frequencies >= low_hz)
-
-        &
-
-        (frequencies <= high_hz)
-
-    )
-
-
-    valid_frequencies = (
-        frequencies[valid]
-    )
-
-
-    valid_spectrum = (
-        spectrum[valid]
-    )
-
-
-    if len(valid_spectrum) == 0:
-
-        return (
-            None,
-            None,
-            None
+        end = (
+            start
+            + window_size
         )
 
 
-    # --------------------------------------------------------
-    # Find strongest frequency
-    # --------------------------------------------------------
-
-    peak_index = np.argmax(
-
-        valid_spectrum
-
-    )
+        window = (
+            signal[
+                start:end
+            ].copy()
+        )
 
 
-    dominant_frequency = (
+        # ----------------------------------------------------
+        # Remove mean
+        # ----------------------------------------------------
 
-        valid_frequencies[
-            peak_index
-        ]
-
-    )
-
-
-    peak_magnitude = (
-
-        valid_spectrum[
-            peak_index
-        ]
-
-    )
+        window -= np.mean(
+            window
+        )
 
 
-    # --------------------------------------------------------
-    # Hz → BPM
-    # --------------------------------------------------------
+        # ----------------------------------------------------
+        # Apply Hann window
+        #
+        # This reduces edge artifacts in the FFT.
+        # ----------------------------------------------------
 
-    bpm = (
-        dominant_frequency
-        * 60
-    )
-
-
-    return (
-
-        bpm,
-
-        dominant_frequency,
-
-        peak_magnitude
-
-    )
+        hann = np.hanning(
+            len(window)
+        )
 
 
-# ============================================================
-# 26. ESTIMATE BPM FOR ALL THREE ROIs
-# ============================================================
+        windowed_signal = (
+            window * hann
+        )
 
-forehead_bpm, forehead_frequency, forehead_power = (
-    estimate_bpm(
+
+        # ----------------------------------------------------
+        # FFT
+        # ----------------------------------------------------
+
+        fft_values = np.fft.rfft(
+
+            windowed_signal,
+
+            n=fft_size
+        )
+
+
+        frequencies = (
+            np.fft.rfftfreq(
+
+                fft_size,
+
+                d=1 / fps
+            )
+        )
+
+
+        magnitude = np.abs(
+            fft_values
+        )
+
+
+        # ----------------------------------------------------
+        # Keep heart-rate frequencies only
+        # ----------------------------------------------------
+
+        valid = (
+
+            (frequencies >= low_hz)
+
+            &
+
+            (frequencies <= high_hz)
+
+        )
+
+
+        valid_frequencies = (
+            frequencies[valid]
+        )
+
+
+        valid_magnitude = (
+            magnitude[valid]
+        )
+
+
+        if len(
+            valid_magnitude
+        ) == 0:
+
+            continue
+
+
+        # ----------------------------------------------------
+        # Strongest frequency
+        # ----------------------------------------------------
+
+        peak_index = np.argmax(
+
+            valid_magnitude
+        )
+
+
+        dominant_frequency = (
+
+            valid_frequencies[
+                peak_index
+            ]
+
+        )
+
+
+        peak_magnitude = (
+
+            valid_magnitude[
+                peak_index
+            ]
+
+        )
+
+
+        # ----------------------------------------------------
+        # Convert frequency to BPM
+        # ----------------------------------------------------
+
+        bpm = (
+
+            dominant_frequency
+            * 60
+
+        )
+
+
+        # ----------------------------------------------------
+        # Spectral peak strength
+        # ----------------------------------------------------
+
+        average_magnitude = (
+
+            np.mean(
+                valid_magnitude
+            )
+
+        )
+
+
+        if average_magnitude > 1e-8:
+
+            peak_strength = (
+
+                peak_magnitude
+                / average_magnitude
+
+            )
+
+        else:
+
+            peak_strength = 0
+
+
+        results.append({
+
+            "start_time":
+                start / fps,
+
+            "end_time":
+                end / fps,
+
+            "bpm":
+                bpm,
+
+            "frequency":
+                dominant_frequency,
+
+            "peak_strength":
+                peak_strength
+        })
+
+
+    return results
+
+
+print()
+print(
+    "Analyzing forehead BPM windows..."
+)
+
+
+forehead_bpm_results = (
+    analyze_bpm_windows(
 
         forehead_filtered,
 
         fps,
 
-        LOW_HZ,
+        BPM_WINDOW_SECONDS,
 
-        HIGH_HZ
-
-    )
-)
-
-
-left_bpm, left_frequency, left_power = (
-    estimate_bpm(
-
-        left_cheek_filtered,
-
-        fps,
+        BPM_STEP_SECONDS,
 
         LOW_HZ,
 
-        HIGH_HZ
+        HIGH_HZ,
 
+        FFT_SIZE
     )
 )
 
-
-right_bpm, right_frequency, right_power = (
-    estimate_bpm(
-
-        right_cheek_filtered,
-
-        fps,
-
-        LOW_HZ,
-
-        HIGH_HZ
-
-    )
-)
-
-
-pipeline_status[
-    "FFT / BPM estimation"
-] = True
-
-
-# ============================================================
-# 27. PRINT BPM RESULTS
-# ============================================================
 
 print()
-print("============================================================")
-print("                       BPM RESULTS")
-print("============================================================")
-
+print(
+    "=" * 60
+)
 
 print(
-
-    "Forehead:",
-
-    round(forehead_bpm, 2),
-
-    "BPM",
-
-    "| Frequency:",
-
-    round(forehead_frequency, 3),
-
-    "Hz"
-
+    "              WINDOWED BPM RESULTS"
 )
-
 
 print(
-
-    "Left cheek:",
-
-    round(left_bpm, 2),
-
-    "BPM",
-
-    "| Frequency:",
-
-    round(left_frequency, 3),
-
-    "Hz"
-
+    "=" * 60
 )
 
 
-print(
-
-    "Right cheek:",
-
-    round(right_bpm, 2),
-
-    "BPM",
-
-    "| Frequency:",
-
-    round(right_frequency, 3),
-
-    "Hz"
-
-)
-
-
-# ============================================================
-# 28. PLOT FOREHEAD FREQUENCY SPECTRUM
-# ============================================================
-
-frequencies = rfftfreq(
-
-    len(forehead_filtered),
-
-    d=1 / fps
-
-)
-
-
-spectrum = np.abs(
-
-    rfft(forehead_filtered)
-
-)
-
-
-plt.figure(
-    figsize=(12, 5)
-)
-
-
-plt.plot(
-
-    frequencies,
-
-    spectrum
-
-)
-
-
-plt.xlim(
-
-    0.5,
-
-    4.2
-
-)
-
-
-plt.xlabel(
-    "Frequency (Hz)"
-)
-
-
-plt.ylabel(
-    "Magnitude"
-)
-
-
-plt.title(
-    "PulseGuard - Forehead Frequency Spectrum"
-)
-
-
-plt.grid(True)
-
-plt.tight_layout()
-
-plt.show()
-
-
-# ============================================================
-# 29. REGIONAL CONSISTENCY
-# ============================================================
-
-bpms = np.array([
-
-    forehead_bpm,
-
-    left_bpm,
-
-    right_bpm
-
-])
-
-
-bpm_mean = np.mean(
-    bpms
-)
-
-
-bpm_std = np.std(
-    bpms
-)
-
-
-bpm_min = np.min(
-    bpms
-)
-
-
-bpm_max = np.max(
-    bpms
-)
-
-
-bpm_range = (
-    bpm_max
-    - bpm_min
-)
-
-
-pipeline_status[
-    "Regional consistency"
-] = True
-
-
-# ============================================================
-# 30. PRINT REGIONAL CONSISTENCY
-# ============================================================
-
-print()
-print("============================================================")
-print("                 REGIONAL CONSISTENCY")
-print("============================================================")
-
-
-print(
-
-    "Mean BPM:",
-
-    round(bpm_mean, 2)
-
-)
-
-
-print(
-
-    "BPM standard deviation:",
-
-    round(bpm_std, 2)
-
-)
-
-
-print(
-
-    "BPM range:",
-
-    round(bpm_range, 2)
-
-)
-
-
-# ------------------------------------------------------------
-# IMPORTANT:
-#
-# We are NOT calling this REAL or DEEPFAKE yet.
-#
-# This only tells us whether the three facial regions
-# produce similar frequency estimates.
-# ------------------------------------------------------------
-
-
-# ============================================================
-# 31. VIDEO QUALITY INFORMATION
-# ============================================================
-
-print()
-print("============================================================")
-print("                    VIDEO QUALITY")
-print("============================================================")
-
-
-print(
-
-    "Duration:",
-
-    round(duration_seconds, 2),
-
-    "seconds"
-
-)
-
-
-print(
-
-    "FPS:",
-
-    round(fps, 2)
-
-)
-
-
-print(
-
-    "Face detection:",
-
-    round(detection_rate, 2),
-
-    "%"
-
-)
-
-
-# ------------------------------------------------------------
-# Frequency resolution
-#
-# Approx:
-#
-# frequency resolution = 1 / duration
-# ------------------------------------------------------------
-
-if duration_seconds > 0:
-
-    frequency_resolution = (
-
-        1
-        / duration_seconds
-
-    )
-
-    bpm_resolution = (
-
-        frequency_resolution
-        * 60
-
-    )
-
+if len(
+    forehead_bpm_results
+) == 0:
 
     print(
-
-        "Approx. FFT frequency resolution:",
-
-        round(
-            frequency_resolution,
-            3
-        ),
-
-        "Hz"
-
+        "No valid BPM windows."
     )
 
+else:
 
-    print(
-
-        "Approx. BPM resolution:",
-
-        round(
-            bpm_resolution,
-            2
-        ),
-
-        "BPM"
-
-    )
-
-
-# ============================================================
-# 32. PIPELINE AUDIT
-# ============================================================
-
-print()
-print()
-print("============================================================")
-print("                   PIPELINE AUDIT")
-print("============================================================")
-
-print()
-
-all_passed = True
-
-
-for step, status in pipeline_status.items():
-
-    if status:
+    for result in forehead_bpm_results:
 
         print(
-            "PASS  ✓  ",
-            step
+
+            f"{result['start_time']:.1f}s - "
+            f"{result['end_time']:.1f}s : "
+
+            f"{result['bpm']:.2f} BPM | "
+
+            f"{result['frequency']:.3f} Hz | "
+
+            f"Peak strength: "
+            f"{result['peak_strength']:.2f}"
+
+        )
+
+
+# ============================================================
+# 24. BPM CONSISTENCY
+# ============================================================
+
+if len(
+    forehead_bpm_results
+) > 0:
+
+    bpm_values = np.array([
+
+        result["bpm"]
+
+        for result
+        in forehead_bpm_results
+
+    ])
+
+
+    mean_bpm = np.mean(
+        bpm_values
+    )
+
+
+    median_bpm = np.median(
+        bpm_values
+    )
+
+
+    bpm_std = np.std(
+        bpm_values
+    )
+
+
+    bpm_range = (
+
+        np.max(bpm_values)
+
+        -
+
+        np.min(bpm_values)
+
+    )
+
+
+else:
+
+    bpm_values = np.array([])
+
+    mean_bpm = np.nan
+
+    median_bpm = np.nan
+
+    bpm_std = np.nan
+
+    bpm_range = np.nan
+
+
+print()
+print(
+    "=" * 60
+)
+
+print(
+    "              BPM CONSISTENCY"
+)
+
+print(
+    "=" * 60
+)
+
+
+if len(bpm_values) > 0:
+
+    print(
+        "Mean BPM:",
+        round(
+            mean_bpm,
+            2
+        )
+    )
+
+
+    print(
+        "Median BPM:",
+        round(
+            median_bpm,
+            2
+        )
+    )
+
+
+    print(
+        "BPM standard deviation:",
+        round(
+            bpm_std,
+            2
+        )
+    )
+
+
+    print(
+        "BPM range:",
+        round(
+            bpm_range,
+            2
+        )
+    )
+
+
+else:
+
+    print(
+        "No BPM estimate available."
+    )
+
+
+# ============================================================
+# 25. PLOT BPM OVER TIME
+# ============================================================
+
+if len(
+    forehead_bpm_results
+) > 0:
+
+    bpm_times = [
+
+        (
+            result["start_time"]
+            +
+            result["end_time"]
+        ) / 2
+
+        for result
+        in forehead_bpm_results
+
+    ]
+
+
+    bpm_values_plot = [
+
+        result["bpm"]
+
+        for result
+        in forehead_bpm_results
+
+    ]
+
+
+    plt.figure(
+        figsize=(12, 5)
+    )
+
+
+    plt.plot(
+
+        bpm_times,
+
+        bpm_values_plot,
+
+        marker="o"
+    )
+
+
+    plt.axhline(
+
+        median_bpm,
+
+        linestyle="--",
+
+        label=(
+            f"Median BPM: "
+            f"{median_bpm:.1f}"
+        )
+
+    )
+
+
+    plt.xlabel(
+        "Time (seconds)"
+    )
+
+
+    plt.ylabel(
+        "Estimated BPM"
+    )
+
+
+    plt.title(
+        "PulseGuard - Windowed BPM Stability"
+    )
+
+
+    plt.legend()
+
+    plt.grid(True)
+
+    plt.tight_layout()
+
+    plt.show()
+
+
+# ============================================================
+# 26. VIDEO QUALITY INFORMATION
+# ============================================================
+
+fft_resolution = (
+
+    fps
+    / FFT_SIZE
+)
+
+
+bpm_resolution = (
+
+    fft_resolution
+    * 60
+
+)
+
+
+print()
+print(
+    "=" * 60
+)
+
+print(
+    "                 VIDEO QUALITY"
+)
+
+print(
+    "=" * 60
+)
+
+
+print(
+    "Duration:",
+    round(
+        duration_seconds,
+        2
+    ),
+    "seconds"
+)
+
+
+print(
+    "FPS:",
+    round(
+        fps,
+        2
+    )
+)
+
+
+print(
+    "Face detection:",
+    round(
+        detection_rate,
+        2
+    ),
+    "%"
+)
+
+
+print(
+    "FFT frequency grid:",
+    round(
+        fft_resolution,
+        4
+    ),
+    "Hz"
+)
+
+
+print(
+    "FFT BPM grid:",
+    round(
+        bpm_resolution,
+        2
+    ),
+    "BPM"
+)
+
+
+# ============================================================
+# 27. PIPELINE AUDIT
+# ============================================================
+
+print()
+print(
+    "=" * 60
+)
+
+print(
+    "                 PIPELINE AUDIT"
+)
+
+print(
+    "=" * 60
+)
+
+
+audit = {}
+
+
+# Video
+
+audit["Video opened"] = (
+    True
+)
+
+
+# MediaPipe
+
+audit["MediaPipe initialized"] = (
+    True
+)
+
+
+# Face detection
+
+audit["Face detection"] = (
+    detection_rate >= 80
+)
+
+
+# Forehead ROI
+
+audit["Forehead ROI extraction"] = (
+    len(forehead_rgb) > 0
+)
+
+
+# Cheeks
+
+audit["Left cheek ROI extraction"] = (
+    len(left_cheek_rgb) > 0
+)
+
+
+audit["Right cheek ROI extraction"] = (
+    len(right_cheek_rgb) > 0
+)
+
+
+# RGB
+
+audit["RGB extraction"] = (
+    forehead_rgb.shape[0] > 0
+)
+
+
+# Normalization
+
+normalization_means = (
+    np.mean(
+        forehead_normalized,
+        axis=0
+    )
+)
+
+
+normalization_stds = (
+    np.std(
+        forehead_normalized,
+        axis=0
+    )
+)
+
+
+normalization_pass = (
+
+    np.all(
+        np.abs(
+            normalization_means
+        ) < 0.01
+    )
+
+    and
+
+    np.all(
+        np.abs(
+            normalization_stds
+            - 1
+        ) < 0.01
+    )
+
+)
+
+
+audit[
+    "RGB normalization"
+] = normalization_pass
+
+
+# POS
+
+audit[
+    "POS rPPG extraction"
+] = (
+
+    len(forehead_pulse) > 0
+
+)
+
+
+# Filtering
+
+audit[
+    "Bandpass filtering"
+] = (
+
+    len(forehead_filtered) > 0
+
+)
+
+
+# BPM
+
+audit[
+    "FFT / BPM estimation"
+] = (
+
+    len(
+        forehead_bpm_results
+    ) > 0
+
+)
+
+
+# Consistency
+
+if len(bpm_values) > 0:
+
+    audit[
+        "BPM consistency"
+    ] = (
+
+        bpm_std < 20
+
+    )
+
+else:
+
+    audit[
+        "BPM consistency"
+    ] = False
+
+
+for name, passed in audit.items():
+
+    if passed:
+
+        print(
+            "PASS  ✓ ",
+            name
         )
 
     else:
 
         print(
-            "FAIL  ✗  ",
-            step
+            "FAIL  ✕ ",
+            name
         )
 
-        all_passed = False
 
+# ============================================================
+# 28. FINAL SIGNAL QUALITY INTERPRETATION
+# ============================================================
 
 print()
+print(
+    "=" * 60
+)
+
+print(
+    "              SIGNAL INTERPRETATION"
+)
+
+print(
+    "=" * 60
+)
 
 
-# ============================================================
-# 33. FINAL AUDIT RESULT
-# ============================================================
+if len(bpm_values) == 0:
 
-if all_passed:
-
-    print(
-        "============================================================"
+    signal_quality = (
+        "INCONCLUSIVE"
     )
 
-    print(
-        "PIPELINE AUDIT: ALL MAJOR BLOCKS PASSED ✓"
+
+elif bpm_std < 8:
+
+    signal_quality = (
+        "GOOD"
     )
 
-    print(
-        "============================================================"
+
+elif bpm_std < 15:
+
+    signal_quality = (
+        "MODERATE"
     )
+
 
 else:
 
-    print(
-        "============================================================"
-    )
-
-    print(
-        "PIPELINE AUDIT: SOME BLOCKS DID NOT PASS ✗"
-    )
-
-    print(
-        "Check the FAIL entries above."
-    )
-
-    print(
-        "============================================================"
+    signal_quality = (
+        "POOR"
     )
 
 
-# ============================================================
-# 34. FINAL SUMMARY
-# ============================================================
+print(
+    "Forehead signal quality:",
+    signal_quality
+)
+
+
+if len(bpm_values) > 0:
+
+    print(
+        "Representative BPM:",
+        round(
+            median_bpm,
+            2
+        )
+    )
+
 
 print()
-print("============================================================")
-print("                    PULSEGUARD SUMMARY")
-print("============================================================")
-
-print()
-
-print(
-    "Video duration:",
-    round(duration_seconds, 2),
-    "seconds"
-)
-
-print(
-    "Frames processed:",
-    processed_frames
-)
-
-print(
-    "Face detection:",
-    round(detection_rate, 2),
-    "%"
-)
-
-print(
-    "Forehead BPM:",
-    round(forehead_bpm, 2)
-)
-
-print(
-    "Left cheek BPM:",
-    round(left_bpm, 2)
-)
-
-print(
-    "Right cheek BPM:",
-    round(right_bpm, 2)
-)
-
-print(
-    "Mean BPM:",
-    round(bpm_mean, 2)
-)
-
-print(
-    "Regional BPM std:",
-    round(bpm_std, 2)
-)
-
-print()
-
 print(
     "IMPORTANT:"
 )
 
+
 print(
-    "These results are physiological-signal features,"
+    "These results are physiological-signal"
 )
 
 print(
-    "NOT a final deepfake verdict."
+    "features, NOT a final deepfake verdict."
+)
+
+
+# ============================================================
+# 29. FRONTEND-STYLE OUTPUT
+# ============================================================
+
+# We are deliberately NOT calling this
+# "real" or "deepfake" yet.
+
+if len(bpm_values) > 0:
+
+    frontend_result = {
+
+        "verdict":
+            "inconclusive",
+
+        "confidence":
+            0.0,
+
+        "bpm":
+            round(
+                float(median_bpm),
+                2
+            ),
+
+        "waveform":
+            forehead_filtered.tolist(),
+
+        "duration_seconds":
+            round(
+                duration_seconds,
+                2
+            ),
+
+        "fps":
+            round(
+                fps,
+                2
+            ),
+
+        "message":
+            (
+                "Physiological signal extracted. "
+                "Deepfake classification is not "
+                "enabled yet."
+            )
+    }
+
+else:
+
+    frontend_result = {
+
+        "verdict":
+            "inconclusive",
+
+        "confidence":
+            0.0,
+
+        "bpm":
+            None,
+
+        "waveform":
+            [],
+
+        "duration_seconds":
+            round(
+                duration_seconds,
+                2
+            ),
+
+        "fps":
+            round(
+                fps,
+                2
+            ),
+
+        "message":
+            (
+                "Could not obtain a reliable "
+                "physiological signal."
+            )
+    }
+
+
+print()
+print(
+    "=" * 60
 )
 
 print(
-    "============================================================")
+    "              FRONTEND OUTPUT"
+)
+
+print(
+    "=" * 60
+)
+
+
+print(
+    "Verdict:",
+    frontend_result["verdict"]
+)
+
+
+print(
+    "Confidence:",
+    frontend_result["confidence"]
+)
+
+
+print(
+    "BPM:",
+    frontend_result["bpm"]
+)
+
+
+print(
+    "Duration:",
+    frontend_result[
+        "duration_seconds"
+    ]
+)
+
+
+print(
+    "FPS:",
+    frontend_result["fps"]
+)
+
+
+print(
+    "Waveform samples:",
+    len(
+        frontend_result[
+            "waveform"
+        ]
+    )
+)
+
+
+print(
+    "Message:",
+    frontend_result["message"]
+)
+
+
+print()
+print(
+    "=" * 60
+)
+
+print(
+    "             PULSEGUARD COMPLETE"
+)
+
+print(
+    "=" * 60
+)
+print()

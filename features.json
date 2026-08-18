@@ -1,0 +1,17 @@
+{
+    "video": "test_video.mp4",
+    "duration_seconds": 42.766666666666666,
+    "fps": 30.0,
+    "face_detection_rate": 98.5190958690569,
+    "median_bpm": 60.205078125,
+    "mean_bpm": 63.03013392857143,
+    "bpm_std": 15.664088344169224,
+    "bpm_range": 48.779296875,
+    "mean_peak_strength": 2.976770782129925,
+    "peak_strength_std": 0.31836585564200726,
+    "left_region_bpm": 68.115234375,
+    "right_region_bpm": 61.962890625,
+    "regional_bpm_std": 3.391358467614324,
+    "regional_bpm_range": 7.91015625,
+    "temporal_stability": 0.2505304427009045
+}

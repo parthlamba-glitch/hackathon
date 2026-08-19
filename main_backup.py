@@ -1,4 +1,3 @@
-import json
 import cv2
 import mediapipe as mp
 import numpy as np
@@ -13,6 +12,7 @@ from scipy.signal import butter, sosfiltfilt
 #          rPPG / PHYSIOLOGICAL SIGNAL PIPELINE
 # ============================================================
 
+
 print()
 print("=" * 60)
 print("                 PULSEGUARD STARTING")
@@ -23,7 +23,6 @@ print()
 # ============================================================
 # 1. CONFIGURATION
 # ============================================================
-
 VIDEO_PATH = (
     sys.argv[1]
     if len(sys.argv) > 1
@@ -32,46 +31,27 @@ VIDEO_PATH = (
 
 MODEL_PATH = "face_landmarker.task"
 
-# ------------------------------------------------------------
-# Plot control
-# ------------------------------------------------------------
-# True  -> display debugging plots
-# False -> close plots automatically
-#
-# IMPORTANT:
-# Keep this False when processing many videos.
-# ------------------------------------------------------------
-
-SHOW_PLOTS = False
-
-
-# ------------------------------------------------------------
 # Heart-rate frequency range
-# ------------------------------------------------------------
-
+#
+# 0.7 Hz = 42 BPM
+# 4.0 Hz = 240 BPM
+#
+# This is deliberately broad for the prototype.
 LOW_HZ = 0.7
 HIGH_HZ = 4.0
 
-
-# ------------------------------------------------------------
 # POS window
-# ------------------------------------------------------------
-
 POS_WINDOW_SECONDS = 1.6
 
-
-# ------------------------------------------------------------
 # Windowed BPM analysis
-# ------------------------------------------------------------
-
 BPM_WINDOW_SECONDS = 10
 BPM_STEP_SECONDS = 5
 
-
-# ------------------------------------------------------------
-# FFT size
-# ------------------------------------------------------------
-
+# Number of FFT points.
+#
+# Zero-padding makes the spectrum look smoother and
+# gives a finer frequency grid, but does NOT magically
+# increase the true information in the video.
 FFT_SIZE = 4096
 
 
@@ -86,7 +66,7 @@ cap = cv2.VideoCapture(video_path)
 if not cap.isOpened():
 
     print("ERROR: Could not open video.")
-    sys.exit(1)
+    exit()
 
 
 fps = cap.get(
@@ -115,10 +95,8 @@ height = int(
 if fps <= 0:
 
     print("ERROR: Invalid FPS.")
-
     cap.release()
-
-    sys.exit(1)
+    exit()
 
 
 duration_seconds = (
@@ -227,10 +205,12 @@ left_cheek_rgb = []
 
 right_cheek_rgb = []
 
-# Actual timestamps corresponding to
-# successfully detected faces.
+
+# Store actual timestamp for every
+# successfully detected face.
 
 sample_times = []
+
 
 processed_frames = 0
 
@@ -253,6 +233,7 @@ while True:
     ret, frame = cap.read()
 
     if not ret:
+
         break
 
 
@@ -261,6 +242,7 @@ while True:
 
     # --------------------------------------------------------
     # OpenCV gives BGR.
+    #
     # MediaPipe expects RGB.
     # --------------------------------------------------------
 
@@ -269,6 +251,8 @@ while True:
         cv2.COLOR_BGR2RGB
     )
 
+
+    # Convert NumPy image to MediaPipe image
 
     mp_image = mp.Image(
 
@@ -281,7 +265,7 @@ while True:
 
 
     # --------------------------------------------------------
-    # Timestamp
+    # TIMESTAMP
     # --------------------------------------------------------
 
     current_time = (
@@ -289,13 +273,14 @@ while True:
         / fps
     )
 
+
     timestamp_ms = int(
         current_time * 1000
     )
 
 
     # --------------------------------------------------------
-    # Face detection
+    # FACE LANDMARK DETECTION
     # --------------------------------------------------------
 
     result = (
@@ -307,10 +292,11 @@ while True:
 
 
     # --------------------------------------------------------
-    # No face found
+    # NO FACE FOUND
     # --------------------------------------------------------
 
     if not result.face_landmarks:
+
         continue
 
 
@@ -548,22 +534,24 @@ while True:
 
 
     # --------------------------------------------------------
-    # OpenCV:
+    # OpenCV gives:
     #
-    # B G R
+    # [Blue, Green, Red]
     #
     # Convert to:
     #
-    # R G B
+    # [Red, Green, Blue]
     # --------------------------------------------------------
 
     forehead_rgb.append(
         forehead_mean[::-1]
     )
 
+
     left_cheek_rgb.append(
         left_cheek_mean[::-1]
     )
+
 
     right_cheek_rgb.append(
         right_cheek_mean[::-1]
@@ -639,15 +627,18 @@ forehead_rgb = np.array(
     dtype=float
 )
 
+
 left_cheek_rgb = np.array(
     left_cheek_rgb,
     dtype=float
 )
 
+
 right_cheek_rgb = np.array(
     right_cheek_rgb,
     dtype=float
 )
+
 
 sample_times = np.array(
     sample_times,
@@ -656,6 +647,7 @@ sample_times = np.array(
 
 
 print()
+
 
 print(
     "Original forehead RGB shape:",
@@ -680,12 +672,11 @@ print(
 if len(sample_times) < 100:
 
     print()
-
     print(
         "ERROR: Not enough valid face samples."
     )
 
-    sys.exit(1)
+    exit()
 
 
 # ============================================================
@@ -701,10 +692,14 @@ def interpolate_rgb(
     """
     Reconstruct a uniformly sampled RGB signal.
 
-    If some frames failed face detection,
+    If a few frames failed face detection,
     interpolation estimates their values from
     nearby valid samples.
     """
+
+    # --------------------------------------------------------
+    # Create the ideal time grid
+    # --------------------------------------------------------
 
     regular_times = np.arange(
 
@@ -724,6 +719,10 @@ def interpolate_rgb(
         )
     )
 
+
+    # --------------------------------------------------------
+    # Interpolate R, G and B separately
+    # --------------------------------------------------------
 
     for channel in range(3):
 
@@ -746,7 +745,6 @@ def interpolate_rgb(
 
 
 print()
-
 print(
     "Interpolating missing samples..."
 )
@@ -810,7 +808,10 @@ def normalize_rgb(
     """
     Normalize each RGB channel independently.
 
-    Output approximately has:
+    This removes the large baseline differences
+    between R, G and B.
+
+    Output has approximately:
         mean = 0
         standard deviation = 1
     """
@@ -819,6 +820,7 @@ def normalize_rgb(
         rgb_signal,
         axis=0
     )
+
 
     std = np.std(
         rgb_signal,
@@ -844,7 +846,6 @@ def normalize_rgb(
 
 
 print()
-
 print(
     "Normalizing RGB signals..."
 )
@@ -856,11 +857,13 @@ forehead_normalized = (
     )
 )
 
+
 left_cheek_normalized = (
     normalize_rgb(
         left_cheek_rgb
     )
 )
+
 
 right_cheek_normalized = (
     normalize_rgb(
@@ -874,10 +877,10 @@ right_cheek_normalized = (
 # ============================================================
 
 print()
-
 print(
     "RGB normalization check:"
 )
+
 
 print(
     "Forehead means:",
@@ -889,6 +892,7 @@ print(
         4
     )
 )
+
 
 print(
     "Forehead std:",
@@ -908,27 +912,41 @@ print(
 
 time = regular_times
 
+
 plt.figure(
     figsize=(12, 5)
 )
 
+
 plt.plot(
+
     time,
+
     forehead_normalized[:, 0],
+
     label="Red"
 )
 
+
 plt.plot(
+
     time,
+
     forehead_normalized[:, 1],
+
     label="Green"
 )
 
+
 plt.plot(
+
     time,
+
     forehead_normalized[:, 2],
+
     label="Blue"
 )
+
 
 plt.xlabel(
     "Time (seconds)"
@@ -948,20 +966,19 @@ plt.grid(True)
 
 plt.tight_layout()
 
-
-if SHOW_PLOTS:
-    plt.show()
-else:
-    plt.close()
+plt.show()
 
 
 # ============================================================
-# 19. POS rPPG EXTRACTION
+# 19. CANONICAL POS rPPG EXTRACTION
 # ============================================================
 
 def extract_pos_signal(
+
     rgb_signal,
+
     fps,
+
     window_seconds=1.6
 ):
     """
@@ -981,6 +998,7 @@ def extract_pos_signal(
         rgb_signal.shape[0]
     )
 
+
     window_length = int(
         round(
             window_seconds * fps
@@ -998,6 +1016,7 @@ def extract_pos_signal(
     pulse_signal = np.zeros(
         number_of_frames
     )
+
 
     contribution_count = np.zeros(
         number_of_frames
@@ -1069,6 +1088,7 @@ def extract_pos_signal(
             G - B
         )
 
+
         S2 = (
             -2 * R
             + G
@@ -1084,12 +1104,14 @@ def extract_pos_signal(
             S1
         )
 
+
         std_s2 = np.std(
             S2
         )
 
 
         if std_s2 < 1e-8:
+
             continue
 
 
@@ -1104,8 +1126,10 @@ def extract_pos_signal(
         # ----------------------------------------------------
 
         H = (
+
             S1
             + alpha * S2
+
         )
 
 
@@ -1120,6 +1144,7 @@ def extract_pos_signal(
 
 
         if H_std < 1e-8:
+
             continue
 
 
@@ -1133,6 +1158,7 @@ def extract_pos_signal(
         pulse_signal[
             start:end
         ] += H
+
 
         contribution_count[
             start:end
@@ -1176,7 +1202,6 @@ def extract_pos_signal(
 
 
 print()
-
 print(
     "Extracting POS rPPG signals..."
 )
@@ -1193,6 +1218,7 @@ forehead_pulse = (
     )
 )
 
+
 left_cheek_pulse = (
     extract_pos_signal(
 
@@ -1203,6 +1229,7 @@ left_cheek_pulse = (
         POS_WINDOW_SECONDS
     )
 )
+
 
 right_cheek_pulse = (
     extract_pos_signal(
@@ -1224,23 +1251,36 @@ plt.figure(
     figsize=(12, 6)
 )
 
+
 plt.plot(
+
     time,
+
     forehead_pulse,
+
     label="Forehead"
 )
 
+
 plt.plot(
+
     time,
+
     left_cheek_pulse,
+
     label="Left Cheek"
 )
 
+
 plt.plot(
+
     time,
+
     right_cheek_pulse,
+
     label="Right Cheek"
 )
+
 
 plt.xlabel(
     "Time (seconds)"
@@ -1260,11 +1300,7 @@ plt.grid(True)
 
 plt.tight_layout()
 
-
-if SHOW_PLOTS:
-    plt.show()
-else:
-    plt.close()
+plt.show()
 
 
 # ============================================================
@@ -1272,10 +1308,15 @@ else:
 # ============================================================
 
 def bandpass_filter(
+
     signal,
+
     fps,
+
     low_hz=0.7,
+
     high_hz=4.0,
+
     order=4
 ):
     """
@@ -1293,6 +1334,7 @@ def bandpass_filter(
         / nyquist
     )
 
+
     high = (
         high_hz
         / nyquist
@@ -1300,10 +1342,12 @@ def bandpass_filter(
 
 
     if high >= 1:
+
         high = 0.99
 
 
     if low <= 0:
+
         low = 0.001
 
 
@@ -1334,7 +1378,6 @@ def bandpass_filter(
 
 
 print()
-
 print(
     "Applying bandpass filter..."
 )
@@ -1353,6 +1396,7 @@ forehead_filtered = (
     )
 )
 
+
 left_cheek_filtered = (
     bandpass_filter(
 
@@ -1365,6 +1409,7 @@ left_cheek_filtered = (
         HIGH_HZ
     )
 )
+
 
 right_cheek_filtered = (
     bandpass_filter(
@@ -1388,23 +1433,36 @@ plt.figure(
     figsize=(12, 6)
 )
 
+
 plt.plot(
+
     time,
+
     forehead_filtered,
+
     label="Forehead"
 )
 
+
 plt.plot(
+
     time,
+
     left_cheek_filtered,
+
     label="Left Cheek"
 )
 
+
 plt.plot(
+
     time,
+
     right_cheek_filtered,
+
     label="Right Cheek"
 )
+
 
 plt.xlabel(
     "Time (seconds)"
@@ -1424,178 +1482,34 @@ plt.grid(True)
 
 plt.tight_layout()
 
-
-if SHOW_PLOTS:
-    plt.show()
-else:
-    plt.close()
+plt.show()
 
 
 # ============================================================
-# 23. CROSS-REGION PHYSIOLOGICAL FEATURES
-# ============================================================
-
-def safe_correlation(a, b):
-
-    if len(a) != len(b):
-        return np.nan
-
-    if np.std(a) < 1e-8:
-        return np.nan
-
-    if np.std(b) < 1e-8:
-        return np.nan
-
-
-    correlation = np.corrcoef(
-        a,
-        b
-    )[0, 1]
-
-
-    if np.isnan(correlation):
-        return np.nan
-
-
-    return float(correlation)
-
-
-# ------------------------------------------------------------
-# Calculate correlation between facial regions
-# ------------------------------------------------------------
-
-forehead_left_corr = safe_correlation(
-    forehead_filtered,
-    left_cheek_filtered
-)
-
-forehead_right_corr = safe_correlation(
-    forehead_filtered,
-    right_cheek_filtered
-)
-
-left_right_corr = safe_correlation(
-    left_cheek_filtered,
-    right_cheek_filtered
-)
-
-
-# ------------------------------------------------------------
-# Overall regional coherence
-# ------------------------------------------------------------
-
-correlations = np.array([
-
-    forehead_left_corr,
-
-    forehead_right_corr,
-
-    left_right_corr
-
-], dtype=float)
-
-
-valid_correlations = correlations[
-    ~np.isnan(correlations)
-]
-
-
-if len(valid_correlations) > 0:
-
-    regional_coherence = float(
-        np.mean(
-            np.abs(
-                valid_correlations
-            )
-        )
-    )
-
-else:
-
-    regional_coherence = np.nan
-
-
-print()
-print("=" * 60)
-print("          CROSS-REGION PHYSIOLOGY")
-print("=" * 60)
-
-print()
-
-print(
-    "Forehead <-> Left cheek:",
-    (
-        round(
-            forehead_left_corr,
-            3
-        )
-        if not np.isnan(
-            forehead_left_corr
-        )
-        else "NaN"
-    )
-)
-
-print(
-    "Forehead <-> Right cheek:",
-    (
-        round(
-            forehead_right_corr,
-            3
-        )
-        if not np.isnan(
-            forehead_right_corr
-        )
-        else "NaN"
-    )
-)
-
-print(
-    "Left cheek <-> Right cheek:",
-    (
-        round(
-            left_right_corr,
-            3
-        )
-        if not np.isnan(
-            left_right_corr
-        )
-        else "NaN"
-    )
-)
-
-print(
-    "Regional coherence:",
-    (
-        round(
-            regional_coherence,
-            3
-        )
-        if not np.isnan(
-            regional_coherence
-        )
-        else "NaN"
-    )
-)
-
-
-# ============================================================
-# 24. WINDOWED BPM ANALYSIS
+# 23. WINDOWED BPM ANALYSIS
 # ============================================================
 
 def analyze_bpm_windows(
+
     signal,
+
     fps,
+
     window_seconds=10,
+
     step_seconds=5,
+
     low_hz=0.7,
+
     high_hz=4.0,
+
     fft_size=4096
 ):
     """
     Analyze the signal in overlapping windows.
 
     Each window produces:
+
         BPM
         dominant frequency
         spectral peak strength
@@ -1604,6 +1518,7 @@ def analyze_bpm_windows(
     window_size = int(
         window_seconds * fps
     )
+
 
     step_size = int(
         step_seconds * fps
@@ -1652,12 +1567,15 @@ def analyze_bpm_windows(
 
 
         # ----------------------------------------------------
-        # Hann window
+        # Apply Hann window
+        #
+        # This reduces edge artifacts in the FFT.
         # ----------------------------------------------------
 
         hann = np.hanning(
             len(window)
         )
+
 
         windowed_signal = (
             window * hann
@@ -1710,6 +1628,7 @@ def analyze_bpm_windows(
             frequencies[valid]
         )
 
+
         valid_magnitude = (
             magnitude[valid]
         )
@@ -1755,8 +1674,10 @@ def analyze_bpm_windows(
         # ----------------------------------------------------
 
         bpm = (
+
             dominant_frequency
             * 60
+
         )
 
 
@@ -1810,7 +1731,6 @@ def analyze_bpm_windows(
 
 
 print()
-
 print(
     "Analyzing forehead BPM windows..."
 )
@@ -1837,11 +1757,17 @@ forehead_bpm_results = (
 
 
 print()
-print("=" * 60)
+print(
+    "=" * 60
+)
+
 print(
     "              WINDOWED BPM RESULTS"
 )
-print("=" * 60)
+
+print(
+    "=" * 60
+)
 
 
 if len(
@@ -1866,14 +1792,13 @@ else:
             f"{result['frequency']:.3f} Hz | "
 
             f"Peak strength: "
-
             f"{result['peak_strength']:.2f}"
 
         )
 
 
 # ============================================================
-# 25. BPM CONSISTENCY
+# 24. BPM CONSISTENCY
 # ============================================================
 
 if len(
@@ -1894,13 +1819,16 @@ if len(
         bpm_values
     )
 
+
     median_bpm = np.median(
         bpm_values
     )
 
+
     bpm_std = np.std(
         bpm_values
     )
+
 
     bpm_range = (
 
@@ -1912,12 +1840,10 @@ if len(
 
     )
 
+
 else:
 
-    bpm_values = np.array(
-        [],
-        dtype=float
-    )
+    bpm_values = np.array([])
 
     mean_bpm = np.nan
 
@@ -1929,11 +1855,17 @@ else:
 
 
 print()
-print("=" * 60)
+print(
+    "=" * 60
+)
+
 print(
     "              BPM CONSISTENCY"
 )
-print("=" * 60)
+
+print(
+    "=" * 60
+)
 
 
 if len(bpm_values) > 0:
@@ -1946,6 +1878,7 @@ if len(bpm_values) > 0:
         )
     )
 
+
     print(
         "Median BPM:",
         round(
@@ -1953,6 +1886,7 @@ if len(bpm_values) > 0:
             2
         )
     )
+
 
     print(
         "BPM standard deviation:",
@@ -1962,6 +1896,7 @@ if len(bpm_values) > 0:
         )
     )
 
+
     print(
         "BPM range:",
         round(
@@ -1969,6 +1904,7 @@ if len(bpm_values) > 0:
             2
         )
     )
+
 
 else:
 
@@ -1978,362 +1914,7 @@ else:
 
 
 # ============================================================
-# 26. REGIONAL BPM FEATURES
-# ============================================================
-
-def get_region_bpm(
-    filtered_signal,
-    fps
-):
-    """
-    Calculate the median BPM across the same
-    overlapping windows used for the forehead.
-
-    This keeps the regional BPM calculation
-    consistent across all facial regions.
-    """
-
-    results = analyze_bpm_windows(
-
-        filtered_signal,
-
-        fps,
-
-        BPM_WINDOW_SECONDS,
-
-        BPM_STEP_SECONDS,
-
-        LOW_HZ,
-
-        HIGH_HZ,
-
-        FFT_SIZE
-    )
-
-
-    if len(results) == 0:
-        return np.nan
-
-
-    values = np.array([
-
-        result["bpm"]
-
-        for result in results
-
-    ])
-
-
-    return float(
-        np.median(values)
-    )
-
-
-forehead_region_bpm = (
-    get_region_bpm(
-        forehead_filtered,
-        fps
-    )
-)
-
-left_region_bpm = (
-    get_region_bpm(
-        left_cheek_filtered,
-        fps
-    )
-)
-
-right_region_bpm = (
-    get_region_bpm(
-        right_cheek_filtered,
-        fps
-    )
-)
-
-
-# ------------------------------------------------------------
-# Regional BPM statistics
-# ------------------------------------------------------------
-
-regional_bpms = np.array([
-
-    forehead_region_bpm,
-
-    left_region_bpm,
-
-    right_region_bpm
-
-], dtype=float)
-
-
-valid_regional_bpms = regional_bpms[
-    ~np.isnan(regional_bpms)
-]
-
-
-if len(
-    valid_regional_bpms
-) > 0:
-
-    regional_bpm_std = float(
-        np.std(
-            valid_regional_bpms
-        )
-    )
-
-    regional_bpm_range = float(
-
-        np.max(
-            valid_regional_bpms
-        )
-
-        -
-
-        np.min(
-            valid_regional_bpms
-        )
-
-    )
-
-else:
-
-    regional_bpm_std = np.nan
-
-    regional_bpm_range = np.nan
-
-
-# ============================================================
-# 27. PEAK STRENGTH FEATURES
-# ============================================================
-
-if len(
-    forehead_bpm_results
-) > 0:
-
-    peak_strength_values = np.array([
-
-        result["peak_strength"]
-
-        for result
-        in forehead_bpm_results
-
-    ])
-
-
-    mean_peak_strength = float(
-        np.mean(
-            peak_strength_values
-        )
-    )
-
-    peak_strength_std = float(
-        np.std(
-            peak_strength_values
-        )
-    )
-
-else:
-
-    mean_peak_strength = np.nan
-
-    peak_strength_std = np.nan
-
-
-# ============================================================
-# 28. TEMPORAL VARIABILITY
-# ============================================================
-
-if len(forehead_filtered) > 1:
-
-    signal_difference = np.diff(
-        forehead_filtered
-    )
-
-    temporal_variability = float(
-        np.std(
-            signal_difference
-        )
-    )
-
-else:
-
-    temporal_variability = np.nan
-
-
-# ============================================================
-# 29. FINAL FEATURE DICTIONARY
-# ============================================================
-
-features = {
-
-    "video":
-        VIDEO_PATH,
-
-    "duration_seconds":
-        float(duration_seconds),
-
-    "fps":
-        float(fps),
-
-    "face_detection_rate":
-        float(detection_rate),
-
-    "median_bpm":
-        (
-            float(median_bpm)
-            if not np.isnan(median_bpm)
-            else np.nan
-        ),
-
-    "mean_bpm":
-        (
-            float(mean_bpm)
-            if not np.isnan(mean_bpm)
-            else np.nan
-        ),
-
-    "bpm_std":
-        (
-            float(bpm_std)
-            if not np.isnan(bpm_std)
-            else np.nan
-        ),
-
-    "bpm_range":
-        (
-            float(bpm_range)
-            if not np.isnan(bpm_range)
-            else np.nan
-        ),
-
-    "mean_peak_strength":
-        (
-            float(mean_peak_strength)
-            if not np.isnan(mean_peak_strength)
-            else np.nan
-        ),
-
-    "peak_strength_std":
-        (
-            float(peak_strength_std)
-            if not np.isnan(peak_strength_std)
-            else np.nan
-        ),
-
-    "forehead_region_bpm":
-        (
-            float(forehead_region_bpm)
-            if not np.isnan(
-                forehead_region_bpm
-            )
-            else np.nan
-        ),
-
-    "left_region_bpm":
-        (
-            float(left_region_bpm)
-            if not np.isnan(
-                left_region_bpm
-            )
-            else np.nan
-        ),
-
-    "right_region_bpm":
-        (
-            float(right_region_bpm)
-            if not np.isnan(
-                right_region_bpm
-            )
-            else np.nan
-        ),
-
-    "regional_bpm_std":
-        (
-            float(regional_bpm_std)
-            if not np.isnan(
-                regional_bpm_std
-            )
-            else np.nan
-        ),
-
-    "regional_bpm_range":
-        (
-            float(regional_bpm_range)
-            if not np.isnan(
-                regional_bpm_range
-            )
-            else np.nan
-        ),
-
-    "temporal_variability":
-        (
-            float(temporal_variability)
-            if not np.isnan(
-                temporal_variability
-            )
-            else np.nan
-        ),
-
-    # --------------------------------------------------------
-    # Cross-region correlation features
-    # --------------------------------------------------------
-
-    "forehead_left_corr":
-        (
-            float(forehead_left_corr)
-            if not np.isnan(
-                forehead_left_corr
-            )
-            else np.nan
-        ),
-
-    "forehead_right_corr":
-        (
-            float(forehead_right_corr)
-            if not np.isnan(
-                forehead_right_corr
-            )
-            else np.nan
-        ),
-
-    "left_right_corr":
-        (
-            float(left_right_corr)
-            if not np.isnan(
-                left_right_corr
-            )
-            else np.nan
-        ),
-
-    "regional_coherence":
-        (
-            float(regional_coherence)
-            if not np.isnan(
-                regional_coherence
-            )
-            else np.nan
-        )
-}
-
-
-# ============================================================
-# 30. PRINT FEATURE VECTOR
-# ============================================================
-
-print()
-print("=" * 60)
-print("              EXTRACTED FEATURES")
-print("=" * 60)
-
-for name, value in features.items():
-
-    print(
-        f"{name:<30} : {value}"
-    )
-
-
-# ============================================================
-# 31. PLOT BPM OVER TIME
+# 25. PLOT BPM OVER TIME
 # ============================================================
 
 if len(
@@ -2379,33 +1960,34 @@ if len(
     )
 
 
-    if not np.isnan(median_bpm):
+    plt.axhline(
 
-        plt.axhline(
+        median_bpm,
 
-            median_bpm,
+        linestyle="--",
 
-            linestyle="--",
-
-            label=(
-                f"Median BPM: "
-                f"{median_bpm:.1f}"
-            )
-
+        label=(
+            f"Median BPM: "
+            f"{median_bpm:.1f}"
         )
+
+    )
 
 
     plt.xlabel(
         "Time (seconds)"
     )
 
+
     plt.ylabel(
         "Estimated BPM"
     )
 
+
     plt.title(
         "PulseGuard - Windowed BPM Stability"
     )
+
 
     plt.legend()
 
@@ -2413,34 +1995,41 @@ if len(
 
     plt.tight_layout()
 
-
-    if SHOW_PLOTS:
-        plt.show()
-    else:
-        plt.close()
+    plt.show()
 
 
 # ============================================================
-# 32. VIDEO QUALITY INFORMATION
+# 26. VIDEO QUALITY INFORMATION
 # ============================================================
 
 fft_resolution = (
+
     fps
     / FFT_SIZE
 )
 
+
 bpm_resolution = (
+
     fft_resolution
     * 60
+
 )
 
 
 print()
-print("=" * 60)
+print(
+    "=" * 60
+)
+
 print(
     "                 VIDEO QUALITY"
 )
-print("=" * 60)
+
+print(
+    "=" * 60
+)
+
 
 print(
     "Duration:",
@@ -2451,6 +2040,7 @@ print(
     "seconds"
 )
 
+
 print(
     "FPS:",
     round(
@@ -2458,6 +2048,7 @@ print(
         2
     )
 )
+
 
 print(
     "Face detection:",
@@ -2468,6 +2059,7 @@ print(
     "%"
 )
 
+
 print(
     "FFT frequency grid:",
     round(
@@ -2476,6 +2068,7 @@ print(
     ),
     "Hz"
 )
+
 
 print(
     "FFT BPM grid:",
@@ -2488,72 +2081,74 @@ print(
 
 
 # ============================================================
-# 33. PIPELINE AUDIT
+# 27. PIPELINE AUDIT
 # ============================================================
 
 print()
-print("=" * 60)
+print(
+    "=" * 60
+)
+
 print(
     "                 PIPELINE AUDIT"
 )
-print("=" * 60)
+
+print(
+    "=" * 60
+)
 
 
 audit = {}
 
 
-# ------------------------------------------------------------
 # Video
-# ------------------------------------------------------------
 
-audit["Video opened"] = True
+audit["Video opened"] = (
+    True
+)
 
 
-# ------------------------------------------------------------
 # MediaPipe
-# ------------------------------------------------------------
 
-audit["MediaPipe initialized"] = True
+audit["MediaPipe initialized"] = (
+    True
+)
 
 
-# ------------------------------------------------------------
 # Face detection
-# ------------------------------------------------------------
 
 audit["Face detection"] = (
     detection_rate >= 80
 )
 
 
-# ------------------------------------------------------------
-# ROI extraction
-# ------------------------------------------------------------
+# Forehead ROI
 
 audit["Forehead ROI extraction"] = (
     len(forehead_rgb) > 0
 )
 
+
+# Cheeks
+
 audit["Left cheek ROI extraction"] = (
     len(left_cheek_rgb) > 0
 )
+
 
 audit["Right cheek ROI extraction"] = (
     len(right_cheek_rgb) > 0
 )
 
 
-# ------------------------------------------------------------
-# RGB extraction
-# ------------------------------------------------------------
+# RGB
 
 audit["RGB extraction"] = (
     forehead_rgb.shape[0] > 0
 )
 
 
-# ------------------------------------------------------------
 # Normalization
-# ------------------------------------------------------------
 
 normalization_means = (
     np.mean(
@@ -2561,6 +2156,7 @@ normalization_means = (
         axis=0
     )
 )
+
 
 normalization_stds = (
     np.std(
@@ -2582,7 +2178,8 @@ normalization_pass = (
 
     np.all(
         np.abs(
-            normalization_stds - 1
+            normalization_stds
+            - 1
         ) < 0.01
     )
 
@@ -2594,51 +2191,51 @@ audit[
 ] = normalization_pass
 
 
-# ------------------------------------------------------------
 # POS
-# ------------------------------------------------------------
 
 audit[
     "POS rPPG extraction"
 ] = (
+
     len(forehead_pulse) > 0
+
 )
 
 
-# ------------------------------------------------------------
 # Filtering
-# ------------------------------------------------------------
 
 audit[
     "Bandpass filtering"
 ] = (
+
     len(forehead_filtered) > 0
+
 )
 
 
-# ------------------------------------------------------------
 # BPM
-# ------------------------------------------------------------
 
 audit[
     "FFT / BPM estimation"
 ] = (
+
     len(
         forehead_bpm_results
     ) > 0
+
 )
 
 
-# ------------------------------------------------------------
-# BPM consistency
-# ------------------------------------------------------------
+# Consistency
 
 if len(bpm_values) > 0:
 
     audit[
         "BPM consistency"
     ] = (
+
         bpm_std < 20
+
     )
 
 else:
@@ -2653,21 +2250,243 @@ for name, passed in audit.items():
     if passed:
 
         print(
-            "PASS",
+            "PASS  ✓ ",
             name
         )
 
     else:
 
         print(
-            "FAIL",
+            "FAIL  ✕ ",
             name
         )
 
 
 # ============================================================
-# 34. SAVE FEATURES
+# 28. FEATURE EXTRACTION FOR MACHINE LEARNING
 # ============================================================
+
+# Average spectral peak strength across BPM windows
+
+if len(forehead_bpm_results) > 0:
+
+    peak_strength_values = np.array([
+
+        result["peak_strength"]
+
+        for result in forehead_bpm_results
+
+    ])
+
+    mean_peak_strength = float(
+        np.mean(peak_strength_values)
+    )
+
+    peak_strength_std = float(
+        np.std(peak_strength_values)
+    )
+
+else:
+
+    mean_peak_strength = 0.0
+    peak_strength_std = 0.0
+
+
+# ------------------------------------------------------------
+# Regional consistency
+# ------------------------------------------------------------
+#
+# We compare the dominant BPM from the three facial regions.
+#
+# If all regions contain a similar physiological signal,
+# their BPM estimates should be reasonably close.
+# ------------------------------------------------------------
+
+def get_region_bpm(
+    filtered_signal,
+    fps
+):
+
+    results = analyze_bpm_windows(
+
+        filtered_signal,
+
+        fps,
+
+        BPM_WINDOW_SECONDS,
+
+        BPM_STEP_SECONDS,
+
+        LOW_HZ,
+
+        HIGH_HZ,
+
+        FFT_SIZE
+    )
+
+    if len(results) == 0:
+
+        return np.nan
+
+    values = np.array([
+
+        result["bpm"]
+
+        for result in results
+
+    ])
+
+    return float(
+        np.median(values)
+    )
+
+
+left_region_bpm = get_region_bpm(
+    left_cheek_filtered,
+    fps
+)
+
+right_region_bpm = get_region_bpm(
+    right_cheek_filtered,
+    fps
+)
+
+
+if (
+    not np.isnan(median_bpm)
+    and not np.isnan(left_region_bpm)
+    and not np.isnan(right_region_bpm)
+):
+
+    regional_bpms = np.array([
+
+        median_bpm,
+        left_region_bpm,
+        right_region_bpm
+
+    ])
+
+    regional_bpm_std = float(
+        np.std(regional_bpms)
+    )
+
+    regional_bpm_range = float(
+        np.max(regional_bpms)
+        -
+        np.min(regional_bpms)
+    )
+
+else:
+
+    regional_bpm_std = 999.0
+    regional_bpm_range = 999.0
+
+
+# ------------------------------------------------------------
+# Temporal stability
+# ------------------------------------------------------------
+#
+# How much does the forehead signal change from sample
+# to sample?
+#
+# This becomes another numerical feature for the classifier.
+# ------------------------------------------------------------
+
+if len(forehead_filtered) > 1:
+
+    signal_difference = np.diff(
+        forehead_filtered
+    )
+
+    temporal_stability = float(
+        np.std(signal_difference)
+    )
+
+else:
+
+    temporal_stability = 999.0
+
+
+# ------------------------------------------------------------
+# Final feature dictionary
+# ------------------------------------------------------------
+
+features = {
+
+    "video": VIDEO_PATH,
+
+    "duration_seconds":
+        float(duration_seconds),
+
+    "fps":
+        float(fps),
+
+    "face_detection_rate":
+        float(detection_rate),
+
+    "median_bpm":
+        float(median_bpm)
+        if not np.isnan(median_bpm)
+        else 0.0,
+
+    "mean_bpm":
+        float(mean_bpm)
+        if not np.isnan(mean_bpm)
+        else 0.0,
+
+    "bpm_std":
+        float(bpm_std)
+        if not np.isnan(bpm_std)
+        else 999.0,
+
+    "bpm_range":
+        float(bpm_range)
+        if not np.isnan(bpm_range)
+        else 999.0,
+
+    "mean_peak_strength":
+        mean_peak_strength,
+
+    "peak_strength_std":
+        peak_strength_std,
+
+    "left_region_bpm":
+        float(left_region_bpm)
+        if not np.isnan(left_region_bpm)
+        else 0.0,
+
+    "right_region_bpm":
+        float(right_region_bpm)
+        if not np.isnan(right_region_bpm)
+        else 0.0,
+
+    "regional_bpm_std":
+        regional_bpm_std,
+
+    "regional_bpm_range":
+        regional_bpm_range,
+
+    "temporal_stability":
+        temporal_stability
+}
+
+
+print()
+print("=" * 60)
+print("              ML FEATURES")
+print("=" * 60)
+
+for name, value in features.items():
+
+    print(
+        f"{name}: {value}"
+    )
+
+# ============================================================
+# 29. SAVE FEATURES
+# ============================================================
+
+import json
 
 with open(
     "features.json",
@@ -2677,28 +2496,30 @@ with open(
     json.dump(
         features,
         f,
-        indent=4,
-        allow_nan=True
+        indent=4
     )
 
-
 print()
-
 print(
     "Features saved to features.json"
 )
 
-
 # ============================================================
-# 35. SIGNAL QUALITY INTERPRETATION
+# 30. FINAL SIGNAL QUALITY INTERPRETATION
 # ============================================================
 
 print()
-print("=" * 60)
+print(
+    "=" * 60
+)
+
 print(
     "              SIGNAL INTERPRETATION"
 )
-print("=" * 60)
+
+print(
+    "=" * 60
+)
 
 
 if len(bpm_values) == 0:
@@ -2707,17 +2528,20 @@ if len(bpm_values) == 0:
         "INCONCLUSIVE"
     )
 
+
 elif bpm_std < 8:
 
     signal_quality = (
         "GOOD"
     )
 
+
 elif bpm_std < 15:
 
     signal_quality = (
         "MODERATE"
     )
+
 
 else:
 
@@ -2744,10 +2568,10 @@ if len(bpm_values) > 0:
 
 
 print()
-
 print(
     "IMPORTANT:"
 )
+
 
 print(
     "These results are physiological-signal"
@@ -2759,8 +2583,11 @@ print(
 
 
 # ============================================================
-# 36. FRONTEND-STYLE OUTPUT
+# 31. FRONTEND-STYLE OUTPUT
 # ============================================================
+
+# We are deliberately NOT calling this
+# "real" or "deepfake" yet.
 
 if len(bpm_values) > 0:
 
@@ -2838,26 +2665,36 @@ else:
 
 
 print()
-print("=" * 60)
+print(
+    "=" * 60
+)
+
 print(
     "              FRONTEND OUTPUT"
 )
-print("=" * 60)
+
+print(
+    "=" * 60
+)
+
 
 print(
     "Verdict:",
     frontend_result["verdict"]
 )
 
+
 print(
     "Confidence:",
     frontend_result["confidence"]
 )
 
+
 print(
     "BPM:",
     frontend_result["bpm"]
 )
+
 
 print(
     "Duration:",
@@ -2866,10 +2703,12 @@ print(
     ]
 )
 
+
 print(
     "FPS:",
     frontend_result["fps"]
 )
+
 
 print(
     "Waveform samples:",
@@ -2880,6 +2719,7 @@ print(
     )
 )
 
+
 print(
     "Message:",
     frontend_result["message"]
@@ -2887,9 +2727,15 @@ print(
 
 
 print()
-print("=" * 60)
+print(
+    "=" * 60
+)
+
 print(
     "             PULSEGUARD COMPLETE"
 )
-print("=" * 60)
+
+print(
+    "=" * 60
+)
 print()

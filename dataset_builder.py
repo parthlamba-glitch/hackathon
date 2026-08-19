@@ -87,16 +87,16 @@ def analyze_video(
     # Run main.py
     # --------------------------------------------------------
 
-    result = subprocess.run(
+    if os.path.exists(FEATURE_FILE):
+        os.remove(FEATURE_FILE)
 
+    result = subprocess.run(
         [
             sys.executable,
             "main.py",
             video_path
         ],
-
         capture_output=True,
-
         text=True
     )
 

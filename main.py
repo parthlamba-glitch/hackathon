@@ -2167,7 +2167,7 @@ else:
 features = {
 
     "video":
-        VIDEO_PATH,
+        video_path,
 
     "duration_seconds":
         float(duration_seconds),

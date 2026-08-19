@@ -9,9 +9,8 @@ import pandas as pd
 #                 PULSEGUARD DATASET BUILDER
 # ============================================================
 
-
-REAL_FOLDER = "videos/real"
-FAKE_FOLDER = "videos/fake"
+REAL_FOLDER = "videos/real_clips"
+FAKE_FOLDER = "videos/fake_clips"
 
 OUTPUT_FILE = "dataset.csv"
 
